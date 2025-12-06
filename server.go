@@ -571,10 +571,10 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 
-	// Geen RRSIG query (NSEC ook weigeren?
+	// Geen RRSIG en NSEC query
 	// Alleen queries in s.zone
 	// Cloudflare accepteert NSEC wel, zie j78.nl
-	if q.Qtype == dns.TypeRRSIG || !dns.IsSubDomain(s.zone, qname) {
+	if q.Qtype == dns.TypeRRSIG || q.Qtype == dns.TypeNSEC || !dns.IsSubDomain(s.zone, qname) {
 		resp.SetRcode(req, dns.RcodeRefused)
 		w.WriteMsg(resp)
 		return
