@@ -482,6 +482,8 @@ func (s *DNSServer) addNsecProof(req *dns.Msg, resp *dns.Msg, qname string, qtyp
 		if resp.Rcode == dns.RcodeNameError {
 			// NXDOMAIN - bewijs dat naam niet bestaat
 			types = []uint16{dns.TypeRRSIG, dns.TypeNSEC, dns.TypeNXNAME}
+			// RFC9824, dus ook hier NODATA - TODO checken of dit zo goed is danwel beter kan!
+			resp.SetRcode(req, dns.RcodeSuccess)
 		} else {
 			// NODATA - bewijs dat type niet bestaat voor deze naam
 			types = make([]uint16, len(DefaultNsecTypes))
