@@ -467,12 +467,12 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 		}
 
 		dnssecOK = opt.Do()
-		compactOK = opt.Co()
+		compactOK = opt.Co() // RFC9824 (+co flag in dig)
 		// Maak EDNS0 in response
 		resp.SetEdns0(1232, dnssecOK)
 		respOpt := resp.IsEdns0()
 		respOpt.SetCo(compactOK)
-
+		
 		// NSID teruggeven als client 'm vraagt
 		for _, o := range opt.Option {
 			if o.Option() == dns.EDNS0NSID {
