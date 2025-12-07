@@ -5,17 +5,18 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"math/big"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
-	"net"
 
 	"github.com/miekg/dns"
 )
@@ -25,6 +26,7 @@ const (
 	defaultTTL = 300
 	nameserver = "forsalens1.testdns.nl."
 	hostmaster = "noreply.dynamic.testdns.nl."
+	nsid       = "SIDNLabs-forsale-ns1-01"
 )
 
 var DefaultNsecTypes = []uint16{
@@ -37,28 +39,28 @@ var DefaultNsecTypes = []uint16{
 }
 
 type Config struct {
-	Zone       string   `json:"zone"`
-	Ns         []string `json:"ns"`
-	Hostmaster string   `json:"hostmaster,omitempty"`
-	Csk        struct {
-		Algorithm uint8  `json:"algorithm"`
+	Zone string `json:"zone"`
+	Ns   []string `json:"ns"`
+	Hostmaster string `json:"hostmaster,omitempty"`
+	Csk struct {
+		Algorithm uint8 `json:"algorithm"`
 		PublicKey string `json:"publicKey"`
 	} `json:"csk"`
 	PrivateKey string `json:"privateKey"`
 }
 
 type DnssecProvider struct {
-	Csk        *dns.DNSKEY
+	Csk *dns.DNSKEY
 	CskPrivKey crypto.Signer
 }
 
 type DNSServer struct {
-	dnssec     *DnssecProvider
-	zone       string
-	ns         []string
+	dnssec *DnssecProvider
+	zone string
+	ns []string
 	hostmaster string
-	soa        *dns.SOA
-	nsRecords  []*dns.NS
+	soa *dns.SOA
+	nsRecords []*dns.NS
 	txtRecords map[string][]*dns.TXT
 }
 
@@ -67,13 +69,13 @@ func GenerateDnssecProvider(name string, algo uint8, rrTtl uint32) (*DnssecProvi
 	p := &DnssecProvider{
 		Csk: &dns.DNSKEY{
 			Hdr: dns.RR_Header{
-				Name:   name,
+				Name: name,
 				Rrtype: dns.TypeDNSKEY,
-				Class:  dns.ClassINET,
-				Ttl:    rrTtl,
+				Class: dns.ClassINET,
+				Ttl: rrTtl,
 			},
-			Flags:     257, // SEP flag voor CSK (combined signing key)
-			Protocol:  3,
+			Flags: 257, // SEP flag voor CSK (combined signing key)
+			Protocol: 3,
 			Algorithm: algo,
 		},
 	}
@@ -116,8 +118,8 @@ func (p *DnssecProvider) SetPrivKeyBytes(b []byte) error {
 	p.CskPrivKey = &ecdsa.PrivateKey{
 		PublicKey: ecdsa.PublicKey{
 			Curve: elliptic.P256(),
-			X:     new(big.Int).SetBytes(pubBytes[:32]),
-			Y:     new(big.Int).SetBytes(pubBytes[32:]),
+			X: new(big.Int).SetBytes(pubBytes[:32]),
+			Y: new(big.Int).SetBytes(pubBytes[32:]),
 		},
 		D: new(big.Int).SetBytes(b),
 	}
@@ -159,11 +161,11 @@ func (p *DnssecProvider) Sign(rrs []dns.RR, validFrom, validTo uint32) ([]dns.RR
 		}
 
 		sig := &dns.RRSIG{
-			Hdr:        dns.RR_Header{Ttl: rrsOfType[0].Header().Ttl},
-			Algorithm:  p.Csk.Algorithm,
+			Hdr: dns.RR_Header{Ttl: rrsOfType[0].Header().Ttl},
+			Algorithm: p.Csk.Algorithm,
 			Expiration: expiration,
-			Inception:  validFrom,
-			KeyTag:     p.Csk.KeyTag(),
+			Inception: validFrom,
+			KeyTag: p.Csk.KeyTag(),
 			SignerName: p.Csk.Hdr.Name,
 		}
 
@@ -234,8 +236,8 @@ func GenerateConfig(zone string, ns []string, hostmaster string) (*Config, error
 	}
 
 	config := &Config{
-		Zone:       zone,
-		Ns:         ns,
+		Zone: zone,
+		Ns: ns,
 		Hostmaster: hostmaster,
 		PrivateKey: base64.StdEncoding.EncodeToString(privKeyBytes),
 	}
@@ -253,13 +255,13 @@ func LoadDnssecFromConfig(config *Config) (*DnssecProvider, error) {
 	p := &DnssecProvider{
 		Csk: &dns.DNSKEY{
 			Hdr: dns.RR_Header{
-				Name:   zone,
+				Name: zone,
 				Rrtype: dns.TypeDNSKEY,
-				Class:  dns.ClassINET,
-				Ttl:    defaultTTL,
+				Class: dns.ClassINET,
+				Ttl: defaultTTL,
 			},
-			Flags:     257,
-			Protocol:  3,
+			Flags: 257,
+			Protocol: 3,
 			Algorithm: config.Csk.Algorithm,
 			PublicKey: config.Csk.PublicKey,
 		},
@@ -295,9 +297,9 @@ func NewDNSServer(config *Config) (*DNSServer, error) {
 	}
 
 	server := &DNSServer{
-		dnssec:     dnssec,
-		zone:       zone,
-		ns:         config.Ns,
+		dnssec: dnssec,
+		zone: zone,
+		ns: config.Ns,
 		hostmaster: hostmaster,
 		txtRecords: make(map[string][]*dns.TXT),
 	}
@@ -313,28 +315,28 @@ func (s *DNSServer) setupRecords() {
 	// SOA record
 	s.soa = &dns.SOA{
 		Hdr: dns.RR_Header{
-			Name:   s.zone,
+			Name: s.zone,
 			Rrtype: dns.TypeSOA,
-			Class:  dns.ClassINET,
-			Ttl:    defaultTTL,
+			Class: dns.ClassINET,
+			Ttl: defaultTTL,
 		},
-		Ns:      s.ns[0],
-		Mbox:    s.hostmaster,
-		Serial:  now,
+		Ns: s.ns[0],
+		Mbox: s.hostmaster,
+		Serial: now,
 		Refresh: 7200,
-		Retry:   3600,
-		Expire:  1209600,
-		Minttl:  defaultTTL,
+		Retry: 3600,
+		Expire: 1209600,
+		Minttl: defaultTTL,
 	}
 
 	// NS records
 	for _, ns := range s.ns {
 		s.nsRecords = append(s.nsRecords, &dns.NS{
 			Hdr: dns.RR_Header{
-				Name:   s.zone,
+				Name: s.zone,
 				Rrtype: dns.TypeNS,
-				Class:  dns.ClassINET,
-				Ttl:    defaultTTL,
+				Class: dns.ClassINET,
+				Ttl: defaultTTL,
 			},
 			Ns: ns,
 		})
@@ -345,37 +347,37 @@ func (s *DNSServer) setupRecords() {
 	s.txtRecords[forSaleName] = []*dns.TXT{
 		{
 			Hdr: dns.RR_Header{
-				Name:   forSaleName,
+				Name: forSaleName,
 				Rrtype: dns.TypeTXT,
-				Class:  dns.ClassINET,
-				Ttl:    1,
+				Class: dns.ClassINET,
+				Ttl: 1,
 			},
 			Txt: []string{"v=FORSALE1;ftxt=Let's make up a nice price for this test domain - it is not really for sale!"},
 		},
 		{
 			Hdr: dns.RR_Header{
-				Name:   forSaleName,
+				Name: forSaleName,
 				Rrtype: dns.TypeTXT,
-				Class:  dns.ClassINET,
-				Ttl:    1,
+				Class: dns.ClassINET,
+				Ttl: 1,
 			},
 			Txt: []string{"v=FORSALE1;furi=mailto:email@example.com"},
 		},
 		{
 			Hdr: dns.RR_Header{
-				Name:   forSaleName,
+				Name: forSaleName,
 				Rrtype: dns.TypeTXT,
-				Class:  dns.ClassINET,
-				Ttl:    1,
+				Class: dns.ClassINET,
+				Ttl: 1,
 			},
 			Txt: []string{""}, // Placeholder voor timestamp
 		},
 		{
 			Hdr: dns.RR_Header{
-				Name:   forSaleName,
+				Name: forSaleName,
 				Rrtype: dns.TypeTXT,
-				Class:  dns.ClassINET,
-				Ttl:    1,
+				Class: dns.ClassINET,
+				Ttl: 1,
 			},
 			Txt: []string{""}, // Placeholder voor prijs
 		},
@@ -421,10 +423,10 @@ func (s *DNSServer) addNsecProof(req *dns.Msg, resp *dns.Msg, qname string, qtyp
 		// Maak NSEC record
 		nsec := &dns.NSEC{
 			Hdr: dns.RR_Header{
-				Name:   qname,
+				Name: qname,
 				Rrtype: dns.TypeNSEC,
-				Class:  dns.ClassINET,
-				Ttl:    defaultTTL,
+				Class: dns.ClassINET,
+				Ttl: defaultTTL,
 			},
 			NextDomain: "\\000." + ToLowerAscii(qname),
 			TypeBitMap: types,
@@ -455,15 +457,33 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 	dnssecOK := false
 	compactOK := false
 	if opt := req.IsEdns0(); opt != nil {
-		dnssecOK = opt.Do()
-		compactOK = opt.Co()
-		resp.SetEdns0(1232, dnssecOK)
-		resp.IsEdns0().SetCo(compactOK)
-		if opt.Version() != 0 { 
+		// Client vraagt een EDNS-versie != 0 -> BadVers teruggeven
+		if opt.Version() != 0 {
 			resp.Rcode = dns.RcodeBadVers
+			// RFC 6891: bij BADVERS MOET je een OPT meenemen
+			resp.SetEdns0(1232, false)
 			w.WriteMsg(resp)
 			return
-                }
+		}
+
+		dnssecOK = opt.Do()
+		compactOK = opt.Co()
+		// Maak EDNS0 in response
+		resp.SetEdns0(1232, dnssecOK)
+		respOpt := resp.IsEdns0()
+		respOpt.SetCo(compactOK)
+
+		// NSID teruggeven als client 'm vraagt
+		for _, o := range opt.Option {
+			if o.Option() == dns.EDNS0NSID {
+				respOpt.Option = append(respOpt.Option, &dns.EDNS0_NSID{
+					Code: dns.EDNS0NSID,
+					Nsid: hex.EncodeToString([]byte(nsid)),
+				})
+				break
+			}
+		}
+
 	}
 
 	if len(req.Question) == 0 {
@@ -691,12 +711,12 @@ func main() {
 
 	udpServer := &dns.Server{
 		Addr: addr,
-		Net:  "udp",
+		Net: "udp",
 	}
 
 	tcpServer := &dns.Server{
 		Addr: addr,
-		Net:  "tcp",
+		Net: "tcp",
 	}
 
 	go func() {
