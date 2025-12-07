@@ -468,7 +468,7 @@ func (s *DNSServer) setupRecords() {
 }
 
 // addNsecProof voegt NSEC records toe voor denial of existence (zoals addr.tools)
-func (s *DNSServer) addNsecProof(req *dns.Msg, resp *dns.Msg, qname string, qtype uint16) error {
+func (s *DNSServer) addNsecProof(req *dns.Msg, resp *dns.Msg, qname string, qtype uint16, compactOK bool) error {
 	opt := req.IsEdns0()
 	if opt == nil || !opt.Do() {
 		return nil // Geen DNSSEC gevraagd
@@ -483,7 +483,7 @@ func (s *DNSServer) addNsecProof(req *dns.Msg, resp *dns.Msg, qname string, qtyp
 			// NXDOMAIN - bewijs dat naam niet bestaat
 			types = []uint16{dns.TypeRRSIG, dns.TypeNSEC, dns.TypeNXNAME}
 			// RFC9824, dus ook hier NODATA - TODO checken of dit zo goed is danwel beter kan!
-			resp.SetRcode(req, dns.RcodeSuccess)
+			if !compactOK {resp.SetRcode(req, dns.RcodeSuccess)}
 		} else {
 			// NODATA - bewijs dat type niet bestaat voor deze naam
 			types = make([]uint16, len(DefaultNsecTypes))
@@ -551,6 +551,7 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 		dnssecOK = opt.Do()
 		compactOK = opt.Co() // RFC9824 (+co flag in dig) - doen we niks mee, alleen loggen
 		resp.SetEdns0(1232, dnssecOK)
+		resp.IsEdns0().SetCo(compactOK) // Echo CO flag
 	}
 
 	if len(req.Question) == 0 {
@@ -635,7 +636,7 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 				}
 			}
 			// Voeg NSEC proof toe
-			if err := s.addNsecProof(req, resp, qname, q.Qtype); err != nil {
+			if err := s.addNsecProof(req, resp, qname, q.Qtype, compactOK); err != nil {
 				log.Printf("Error adding NSEC proof: %v", err)
 			}
 		}
@@ -690,7 +691,7 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 				}
 			}
 			// Voeg NSEC proof toe
-			if err := s.addNsecProof(req, resp, qname, q.Qtype); err != nil {
+			if err := s.addNsecProof(req, resp, qname, q.Qtype, compactOK); err != nil {
 				log.Printf("Error adding NSEC proof: %v", err)
 			}
 			w.WriteMsg(resp)
@@ -710,7 +711,7 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 		}
 	}
 	// Voeg NSEC proof toe voor NXDOMAIN
-	if err := s.addNsecProof(req, resp, qname, q.Qtype); err != nil {
+	if err := s.addNsecProof(req, resp, qname, q.Qtype, compactOK); err != nil {
 		log.Printf("Error adding NSEC proof: %v", err)
 	}
 	w.WriteMsg(resp)
