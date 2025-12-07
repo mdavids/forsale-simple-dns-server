@@ -500,6 +500,17 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// Alleen CLASS IN
 	if q.Qclass != dns.ClassINET {
 		resp.SetRcode(req, dns.RcodeNotImplemented)
+
+		// Voeg Extended DNS Error toe (RFC 8914)
+		if opt := req.IsEdns0(); opt != nil {
+			if respOpt := resp.IsEdns0(); respOpt != nil {
+				respOpt.Option = append(respOpt.Option, &dns.EDNS0_EDE{
+					InfoCode:  dns.ExtendedErrorCodeNotSupported, // Code 21
+					ExtraText: "Only INternet class is supported 🚫",
+				})
+			}
+		}
+
 		w.WriteMsg(resp)
 		return
 	}
@@ -507,6 +518,25 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// Geen RRSIG, NSEC queries en alleen binnen zone
 	if q.Qtype == dns.TypeRRSIG || q.Qtype == dns.TypeNSEC || !dns.IsSubDomain(s.zone, qname) {
 		resp.SetRcode(req, dns.RcodeRefused)
+		
+		infoCode := dns.ExtendedErrorCodeOther
+		extraTxt := "Nah, simple authoritative test server here, don’t do that. 🤪"
+		
+		if !dns.IsSubDomain(s.zone, qname) {
+			infoCode = dns.ExtendedErrorCodeNotAuthoritative
+			extraTxt = "Please only ask me for " + s.zone + " 😡"
+		}
+
+		// Voeg Extended DNS Error toe (RFC 8914)
+		if opt := req.IsEdns0(); opt != nil {
+			if respOpt := resp.IsEdns0(); respOpt != nil {
+				respOpt.Option = append(respOpt.Option, &dns.EDNS0_EDE{
+					InfoCode:  infoCode,
+					ExtraText: extraTxt,
+				})
+			}
+		}
+
 		w.WriteMsg(resp)
 		return
 	}
@@ -514,6 +544,17 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// Geen ANY
 	if q.Qtype == dns.TypeANY {
 		resp.SetRcode(req, dns.RcodeNotImplemented)
+
+		// Voeg Extended DNS Error toe (RFC 8914)
+		if opt := req.IsEdns0(); opt != nil {
+			if respOpt := resp.IsEdns0(); respOpt != nil {
+				respOpt.Option = append(respOpt.Option, &dns.EDNS0_EDE{
+					InfoCode:  dns.ExtendedErrorCodeNotSupported, // Code 21
+					ExtraText: "ANY queries not supported 🚫",
+				})
+			}
+		}
+    
 		w.WriteMsg(resp)
 		return
 	}
