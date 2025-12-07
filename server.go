@@ -459,6 +459,11 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 		compactOK = opt.Co()
 		resp.SetEdns0(1232, dnssecOK)
 		resp.IsEdns0().SetCo(compactOK)
+		if opt.Version() != 0 { 
+			resp.Rcode = dns.RcodeBadVers
+			w.WriteMsg(resp)
+			return
+                }
 	}
 
 	if len(req.Question) == 0 {
