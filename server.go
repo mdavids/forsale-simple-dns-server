@@ -23,7 +23,6 @@ import (
 const (
 	zoneName   = "dynamic.testdns.nl."
 	defaultTTL = 300
-	//nameserver = "ns1.dynamic.testdns.nl."
 	nameserver = "forsalens1.testdns.nl."
 	hostmaster = "noreply.dynamic.testdns.nl."
 )
@@ -41,29 +40,16 @@ type Config struct {
 	Zone       string   `json:"zone"`
 	Ns         []string `json:"ns"`
 	Hostmaster string   `json:"hostmaster,omitempty"`
-	Ksk        struct {
+	Csk        struct {
 		Algorithm uint8  `json:"algorithm"`
 		PublicKey string `json:"publicKey"`
-	} `json:"ksk"`
-	Zsk        struct {
-		Algorithm uint8  `json:"algorithm"`
-		PublicKey string `json:"publicKey"`
-	} `json:"zsk"`
-	KeySig struct {
-		Algorithm  uint8  `json:"algorithm"`
-		Expiration uint32 `json:"expiration"`
-		Inception  uint32 `json:"inception"`
-		KeyTag     uint16 `json:"keyTag"`
-		Signature  string `json:"signature"`
-	} `json:"keySig"`
+	} `json:"csk"`
 	PrivateKey string `json:"privateKey"`
 }
 
 type DnssecProvider struct {
-	Ksk        *dns.DNSKEY
-	Zsk        *dns.DNSKEY
-	ZskPrivKey crypto.Signer
-	KeySig     *dns.RRSIG
+	Csk        *dns.DNSKEY
+	CskPrivKey crypto.Signer
 }
 
 type DNSServer struct {
@@ -76,88 +62,58 @@ type DNSServer struct {
 	txtRecords map[string][]*dns.TXT
 }
 
-// GenerateDnssecProvider genereert nieuwe DNSSEC keys
-func GenerateDnssecProvider(name string, algo uint8, rrTtl, validFrom, validTo uint32) (*DnssecProvider, error) {
+// GenerateDnssecProvider genereert nieuwe DNSSEC CSK
+func GenerateDnssecProvider(name string, algo uint8, rrTtl uint32) (*DnssecProvider, error) {
 	p := &DnssecProvider{
-		Ksk: &dns.DNSKEY{
+		Csk: &dns.DNSKEY{
 			Hdr: dns.RR_Header{
 				Name:   name,
 				Rrtype: dns.TypeDNSKEY,
 				Class:  dns.ClassINET,
 				Ttl:    rrTtl,
 			},
-			Flags:     257, // SEP voor KSK
+			Flags:     257, // SEP flag voor CSK (combined signing key)
 			Protocol:  3,
 			Algorithm: algo,
 		},
-		Zsk: &dns.DNSKEY{
-			Hdr: dns.RR_Header{
-				Name:   name,
-				Rrtype: dns.TypeDNSKEY,
-				Class:  dns.ClassINET,
-				Ttl:    rrTtl,
-			},
-			Flags:     256, // Geen SEP voor ZSK
-			Protocol:  3,
-			Algorithm: algo,
-		},
-		KeySig: &dns.RRSIG{
-			Hdr:        dns.RR_Header{Ttl: rrTtl},
-			Algorithm:  algo,
-			Expiration: validTo,
-			Inception:  validFrom,
-			SignerName: name,
-		},
 	}
 
-	// Genereer keys (256 bits voor ECDSA P256)
-	kskPrivateKey, err := p.Ksk.Generate(256)
-	if err != nil {
-		return nil, err
-	}
-
-	zskPrivateKey, err := p.Zsk.Generate(256)
+	// Genereer key (256 bits voor ECDSA P256)
+	cskPrivateKey, err := p.Csk.Generate(256)
 	if err != nil {
 		return nil, err
 	}
 
 	// Cast naar ECDSA private key
-	p.ZskPrivKey = zskPrivateKey.(*ecdsa.PrivateKey)
-
-	// Sign de DNSKEY RRset met KSK
-	p.KeySig.KeyTag = p.Ksk.KeyTag()
-	err = p.KeySig.Sign(kskPrivateKey.(crypto.Signer), []dns.RR{p.Ksk, p.Zsk})
-	if err != nil {
-		return nil, err
-	}
+	p.CskPrivKey = cskPrivateKey.(*ecdsa.PrivateKey)
 
 	return p, nil
 }
 
 // PrivKeyBytes extraheert de private key bytes
 func (p *DnssecProvider) PrivKeyBytes() ([]byte, error) {
-	if p == nil || p.Zsk == nil {
-		return nil, fmt.Errorf("zsk must be populated")
+	if p == nil || p.Csk == nil {
+		return nil, fmt.Errorf("csk must be populated")
 	}
-	return p.ZskPrivKey.(*ecdsa.PrivateKey).D.Bytes(), nil
+	return p.CskPrivKey.(*ecdsa.PrivateKey).D.Bytes(), nil
 }
 
 // SetPrivKeyBytes zet de private key van bytes
 func (p *DnssecProvider) SetPrivKeyBytes(b []byte) error {
-	if p == nil || p.Zsk == nil {
-		return fmt.Errorf("zsk must be populated")
+	if p == nil || p.Csk == nil {
+		return fmt.Errorf("csk must be populated")
 	}
 
-	pubBytes, err := base64.StdEncoding.DecodeString(p.Zsk.PublicKey)
+	pubBytes, err := base64.StdEncoding.DecodeString(p.Csk.PublicKey)
 	if err != nil {
-		return fmt.Errorf("cannot decode zsk public key: %w", err)
+		return fmt.Errorf("cannot decode csk public key: %w", err)
 	}
 
 	if len(pubBytes) != 64 {
-		return fmt.Errorf("wrong zsk public key length: %v", len(pubBytes))
+		return fmt.Errorf("wrong csk public key length: %v", len(pubBytes))
 	}
 
-	p.ZskPrivKey = &ecdsa.PrivateKey{
+	p.CskPrivKey = &ecdsa.PrivateKey{
 		PublicKey: ecdsa.PublicKey{
 			Curve: elliptic.P256(),
 			X:     new(big.Int).SetBytes(pubBytes[:32]),
@@ -171,8 +127,8 @@ func (p *DnssecProvider) SetPrivKeyBytes(b []byte) error {
 
 // Sign ondertekent een RRset
 func (p *DnssecProvider) Sign(rrs []dns.RR, validFrom, validTo uint32) ([]dns.RR, error) {
-	if p == nil || p.Zsk == nil {
-		return nil, fmt.Errorf("zsk must be populated")
+	if p == nil || p.Csk == nil {
+		return nil, fmt.Errorf("csk must be populated")
 	}
 	if len(rrs) == 0 {
 		return nil, nil
@@ -204,14 +160,14 @@ func (p *DnssecProvider) Sign(rrs []dns.RR, validFrom, validTo uint32) ([]dns.RR
 
 		sig := &dns.RRSIG{
 			Hdr:        dns.RR_Header{Ttl: rrsOfType[0].Header().Ttl},
-			Algorithm:  p.Zsk.Algorithm,
+			Algorithm:  p.Csk.Algorithm,
 			Expiration: expiration,
 			Inception:  validFrom,
-			KeyTag:     p.Zsk.KeyTag(),
-			SignerName: p.Zsk.Hdr.Name,
+			KeyTag:     p.Csk.KeyTag(),
+			SignerName: p.Csk.Hdr.Name,
 		}
 
-		err := sig.Sign(p.ZskPrivKey, rrsOfType)
+		err := sig.Sign(p.CskPrivKey, rrsOfType)
 		if err != nil {
 			return nil, err
 		}
@@ -221,7 +177,7 @@ func (p *DnssecProvider) Sign(rrs []dns.RR, validFrom, validTo uint32) ([]dns.RR
 	return sigs, nil
 }
 
-// ToLowerAscii - ascii-only string lowercase (zoals addr.tools)
+// ToLowerAscii - ascii-only string lowercase
 func ToLowerAscii(s string) string {
 	return strings.ToLower(s)
 }
@@ -257,7 +213,7 @@ func SaveConfig(path string, config *Config) error {
 	return os.WriteFile(path, data, 0600)
 }
 
-// GenerateConfig genereert een nieuwe configuratie met DNSSEC keys
+// GenerateConfig genereert een nieuwe configuratie met DNSSEC CSK
 func GenerateConfig(zone string, ns []string, hostmaster string) (*Config, error) {
 	zone = dns.CanonicalName(zone)
 	for i := range ns {
@@ -267,11 +223,7 @@ func GenerateConfig(zone string, ns []string, hostmaster string) (*Config, error
 		hostmaster = dns.CanonicalName(hostmaster)
 	}
 
-	now := uint32(time.Now().Unix())
-	validFrom := now - now%86400
-	validTo := validFrom + 315360000 // 10 jaar
-
-	dnssec, err := GenerateDnssecProvider(zone, dns.ECDSAP256SHA256, defaultTTL, validFrom, validTo)
+	dnssec, err := GenerateDnssecProvider(zone, dns.ECDSAP256SHA256, defaultTTL)
 	if err != nil {
 		return nil, err
 	}
@@ -288,15 +240,8 @@ func GenerateConfig(zone string, ns []string, hostmaster string) (*Config, error
 		PrivateKey: base64.StdEncoding.EncodeToString(privKeyBytes),
 	}
 
-	config.Ksk.Algorithm = dnssec.Ksk.Algorithm
-	config.Ksk.PublicKey = dnssec.Ksk.PublicKey
-	config.Zsk.Algorithm = dnssec.Zsk.Algorithm
-	config.Zsk.PublicKey = dnssec.Zsk.PublicKey
-	config.KeySig.Algorithm = dnssec.KeySig.Algorithm
-	config.KeySig.Expiration = dnssec.KeySig.Expiration
-	config.KeySig.Inception = dnssec.KeySig.Inception
-	config.KeySig.KeyTag = dnssec.KeySig.KeyTag
-	config.KeySig.Signature = dnssec.KeySig.Signature
+	config.Csk.Algorithm = dnssec.Csk.Algorithm
+	config.Csk.PublicKey = dnssec.Csk.PublicKey
 
 	return config, nil
 }
@@ -306,7 +251,7 @@ func LoadDnssecFromConfig(config *Config) (*DnssecProvider, error) {
 	zone := dns.CanonicalName(config.Zone)
 
 	p := &DnssecProvider{
-		Ksk: &dns.DNSKEY{
+		Csk: &dns.DNSKEY{
 			Hdr: dns.RR_Header{
 				Name:   zone,
 				Rrtype: dns.TypeDNSKEY,
@@ -315,37 +260,8 @@ func LoadDnssecFromConfig(config *Config) (*DnssecProvider, error) {
 			},
 			Flags:     257,
 			Protocol:  3,
-			Algorithm: config.Ksk.Algorithm,
-			PublicKey: config.Ksk.PublicKey,
-		},
-		Zsk: &dns.DNSKEY{
-			Hdr: dns.RR_Header{
-				Name:   zone,
-				Rrtype: dns.TypeDNSKEY,
-				Class:  dns.ClassINET,
-				Ttl:    defaultTTL,
-			},
-			Flags:     256,
-			Protocol:  3,
-			Algorithm: config.Zsk.Algorithm,
-			PublicKey: config.Zsk.PublicKey,
-		},
-		KeySig: &dns.RRSIG{
-			Hdr: dns.RR_Header{
-				Name:   zone,
-				Rrtype: dns.TypeRRSIG,
-				Class:  dns.ClassINET,
-				Ttl:    defaultTTL,
-			},
-			TypeCovered: dns.TypeDNSKEY,
-			Algorithm:   config.KeySig.Algorithm,
-			Labels:      uint8(dns.CountLabel(zone)),
-			OrigTtl:     defaultTTL,
-			Expiration:  config.KeySig.Expiration,
-			Inception:   config.KeySig.Inception,
-			KeyTag:      config.KeySig.KeyTag,
-			SignerName:  zone,
-			Signature:   config.KeySig.Signature,
+			Algorithm: config.Csk.Algorithm,
+			PublicKey: config.Csk.PublicKey,
 		},
 	}
 
@@ -425,7 +341,6 @@ func (s *DNSServer) setupRecords() {
 	}
 
 	// TXT records voor _for-sale subdomain
-	// (timestamp en prijs worden dynamisch gegenereerd bij elke query)
 	forSaleName := "_for-sale." + s.zone
 	s.txtRecords[forSaleName] = []*dns.TXT{
 		{
@@ -433,7 +348,7 @@ func (s *DNSServer) setupRecords() {
 				Name:   forSaleName,
 				Rrtype: dns.TypeTXT,
 				Class:  dns.ClassINET,
-				Ttl:    1, // Korte TTL voor hele RRset (dynamische data)
+				Ttl:    1,
 			},
 			Txt: []string{"v=FORSALE1;ftxt=Let's make up a nice price for this test domain - it is not really for sale!"},
 		},
@@ -453,7 +368,7 @@ func (s *DNSServer) setupRecords() {
 				Class:  dns.ClassINET,
 				Ttl:    1,
 			},
-			Txt: []string{""}, // Placeholder, wordt per query gevuld met timestamp
+			Txt: []string{""}, // Placeholder voor timestamp
 		},
 		{
 			Hdr: dns.RR_Header{
@@ -462,41 +377,41 @@ func (s *DNSServer) setupRecords() {
 				Class:  dns.ClassINET,
 				Ttl:    1,
 			},
-			Txt: []string{""}, // Placeholder, wordt per query gevuld met prijs
+			Txt: []string{""}, // Placeholder voor prijs
 		},
 	}
 }
 
-// addNsecProof voegt NSEC records toe voor denial of existence (zoals addr.tools)
+// addNsecProof voegt NSEC records toe voor denial of existence (RFC 9824)
 func (s *DNSServer) addNsecProof(req *dns.Msg, resp *dns.Msg, qname string, qtype uint16, compactOK bool) error {
 	opt := req.IsEdns0()
 	if opt == nil || !opt.Do() {
-		return nil // Geen DNSSEC gevraagd
+		return nil
 	}
 
-	// Bepaal welke types aanwezig zijn
 	var types []uint16
 	isApex := EqualsAsciiIgnoreCase(qname, s.zone)
 
 	if len(resp.Answer) == 0 {
 		if resp.Rcode == dns.RcodeNameError {
-			// NXDOMAIN - bewijs dat naam niet bestaat
+			// NXDOMAIN - RFC 9824: gebruik TYPE128 (NXNAME)
 			types = []uint16{dns.TypeRRSIG, dns.TypeNSEC, dns.TypeNXNAME}
-			// RFC9824, dus ook hier NODATA (tenzij CO flag)
-			if !compactOK {resp.SetRcode(req, dns.RcodeSuccess)}
+			// RFC 9824: verander NXDOMAIN naar NOERROR (tenzij CO flag)
+			if !compactOK {
+				resp.SetRcode(req, dns.RcodeSuccess)
+			}
 		} else {
-			// NODATA - bewijs dat type niet bestaat voor deze naam
+			// NODATA - bewijs dat type niet bestaat
 			types = make([]uint16, len(DefaultNsecTypes))
 			copy(types, DefaultNsecTypes)
 
-			// Verwijder het gevraagde type en types die niet op deze locatie horen
 			filteredTypes := []uint16{}
 			for _, t := range types {
 				if t == qtype {
-					continue // Gevraagde type niet in bitmap (want bestaat niet)
+					continue
 				}
 				if !isApex && (t == dns.TypeNS || t == dns.TypeSOA || t == dns.TypeDNSKEY) {
-					continue // Deze types alleen op apex
+					continue
 				}
 				filteredTypes = append(filteredTypes, t)
 			}
@@ -511,7 +426,7 @@ func (s *DNSServer) addNsecProof(req *dns.Msg, resp *dns.Msg, qname string, qtyp
 				Class:  dns.ClassINET,
 				Ttl:    defaultTTL,
 			},
-			NextDomain: "\\000." + ToLowerAscii(qname), // White lie: wijst naar zichzelf
+			NextDomain: "\\000." + ToLowerAscii(qname),
 			TypeBitMap: types,
 		}
 		resp.Ns = append(resp.Ns, nsec)
@@ -534,24 +449,16 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 	resp.Authoritative = true
 	resp.RecursionAvailable = false
 
-	// Get the source IP
 	srcIp, _, _ := net.SplitHostPort(w.RemoteAddr().String())
-	
-// Zit al ergens of zo ?? TODO: testen: dig +dnssec +opcode=1
-//	// Alleen queries
-//        if req.Opcode != dns.OpcodeQuery {
-//                w.WriteMsg(new(dns.Msg).SetRcode(req, dns.RcodeNotImplemented))
-//                return
-//        }
 
 	// Check EDNS0
 	dnssecOK := false
-	compactOK :=false
+	compactOK := false
 	if opt := req.IsEdns0(); opt != nil {
 		dnssecOK = opt.Do()
-		compactOK = opt.Co() // RFC9824 (+co flag in dig) - doen we niks mee, alleen loggen
+		compactOK = opt.Co()
 		resp.SetEdns0(1232, dnssecOK)
-		resp.IsEdns0().SetCo(compactOK) // Echo CO flag
+		resp.IsEdns0().SetCo(compactOK)
 	}
 
 	if len(req.Question) == 0 {
@@ -572,33 +479,36 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 
-	// Geen RRSIG en NSEC query
-	// Alleen queries in s.zone
-	// Cloudflare accepteert NSEC wel, zie j78.nl
+	// Geen RRSIG, NSEC queries en alleen binnen zone
 	if q.Qtype == dns.TypeRRSIG || q.Qtype == dns.TypeNSEC || !dns.IsSubDomain(s.zone, qname) {
 		resp.SetRcode(req, dns.RcodeRefused)
 		w.WriteMsg(resp)
 		return
 	}
 
-	// Geen ANY 
+	// Geen ANY
 	if q.Qtype == dns.TypeANY {
 		resp.SetRcode(req, dns.RcodeNotImplemented)
 		w.WriteMsg(resp)
 		return
 	}
 
-	// DNSKEY query?
+	// DNSKEY query - sign dynamisch
 	if q.Qtype == dns.TypeDNSKEY && qname == s.zone {
-		resp.Answer = append(resp.Answer, dns.Copy(s.dnssec.Ksk), dns.Copy(s.dnssec.Zsk))
+		resp.Answer = append(resp.Answer, dns.Copy(s.dnssec.Csk))
 		if dnssecOK {
-			resp.Answer = append(resp.Answer, dns.Copy(s.dnssec.KeySig))
+			sigs, err := s.dnssec.Sign(resp.Answer, 0, 0)
+			if err == nil {
+				resp.Answer = append(resp.Answer, sigs...)
+			} else {
+				log.Printf("Error signing DNSKEY: %v", err)
+			}
 		}
 		w.WriteMsg(resp)
 		return
 	}
 
-	// Apex records (zone zelf)
+	// Apex records
 	if qname == s.zone {
 		resp.Rcode = dns.RcodeSuccess
 		switch q.Qtype {
@@ -625,7 +535,7 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 				}
 			}
 		default:
-			// NODATA - geen data voor dit type op apex
+			// NODATA op apex
 			resp.Ns = append(resp.Ns, dns.Copy(s.soa))
 			if dnssecOK {
 				sigs, err := s.dnssec.Sign(resp.Ns, 0, 0)
@@ -635,7 +545,6 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 					log.Printf("Error signing authority SOA: %v", err)
 				}
 			}
-			// Voeg NSEC proof toe
 			if err := s.addNsecProof(req, resp, qname, q.Qtype, compactOK); err != nil {
 				log.Printf("Error adding NSEC proof: %v", err)
 			}
@@ -644,12 +553,11 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 
-	// TXT records?
+	// TXT records
 	if txtRecs, exists := s.txtRecords[qname]; exists {
 		if q.Qtype == dns.TypeTXT {
 			resp.Rcode = dns.RcodeSuccess
 
-			// Prijs stappen voor random selectie
 			priceSteps := []int{100, 250, 500, 750, 1000, 1500, 2000, 2500, 3000, 4000, 5000,
 				7500, 10000, 15000, 20000, 25000, 30000, 40000, 50000, 75000, 100000}
 
@@ -657,11 +565,10 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 				txtCopy := dns.Copy(txt).(*dns.TXT)
 				txtCopy.Hdr.Name = qname
 
-				// Voor _for-sale: vul dynamische velden
 				if qname == "_for-sale."+s.zone && len(txtCopy.Txt) > 0 && txtCopy.Txt[0] == "" {
-					if i == 2 { // Timestamp record
+					if i == 2 {
 						txtCopy.Txt = []string{fmt.Sprintf("v=FORSALE1;ftxt=%s", time.Now().Format(time.RFC3339))}
-					} else if i == 3 { // Prijs record
+					} else if i == 3 {
 						price := priceSteps[time.Now().UnixNano()%int64(len(priceSteps))]
 						txtCopy.Txt = []string{fmt.Sprintf("v=FORSALE1;fval=EUR%d", price)}
 					}
@@ -679,7 +586,7 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 			w.WriteMsg(resp)
 			return
 		} else {
-			// Naam bestaat, maar niet het gevraagde type (NODATA)
+			// NODATA - naam bestaat, type niet
 			resp.Rcode = dns.RcodeSuccess
 			resp.Ns = append(resp.Ns, dns.Copy(s.soa))
 			if dnssecOK {
@@ -690,7 +597,6 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 					log.Printf("Error signing authority SOA: %v", err)
 				}
 			}
-			// Voeg NSEC proof toe
 			if err := s.addNsecProof(req, resp, qname, q.Qtype, compactOK); err != nil {
 				log.Printf("Error adding NSEC proof: %v", err)
 			}
@@ -699,7 +605,7 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 		}
 	}
 
-	// Naam bestaat niet (NXDOMAIN)
+	// NXDOMAIN
 	resp.SetRcode(req, dns.RcodeNameError)
 	resp.Ns = append(resp.Ns, dns.Copy(s.soa))
 	if dnssecOK {
@@ -710,7 +616,6 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, req *dns.Msg) {
 			log.Printf("Error signing authority SOA: %v", err)
 		}
 	}
-	// Voeg NSEC proof toe voor NXDOMAIN
 	if err := s.addNsecProof(req, resp, qname, q.Qtype, compactOK); err != nil {
 		log.Printf("Error adding NSEC proof: %v", err)
 	}
@@ -727,7 +632,6 @@ func main() {
 	flag.BoolVar(&genConfig, "genconfig", false, "Generate new config and exit")
 	flag.Parse()
 
-	// Config generation mode?
 	if genConfig {
 		config, err := GenerateConfig(zoneName, []string{nameserver}, hostmaster)
 		if err != nil {
@@ -739,15 +643,13 @@ func main() {
 			log.Fatalf("Failed to save config: %v", err)
 		}
 
-		// Print DS record
 		dnssec, _ := LoadDnssecFromConfig(config)
-		ds := dnssec.Ksk.ToDS(dns.SHA256)
+		ds := dnssec.Csk.ToDS(dns.SHA256)
 		fmt.Printf("Generated config saved to: %s\n\n", configPath)
 		fmt.Printf("=== DS Record (add to parent zone) ===\n%s\n", ds.String())
 		return
 	}
 
-	// Laad of genereer config
 	config, err := LoadConfig(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -766,24 +668,20 @@ func main() {
 		}
 	}
 
-	// Maak DNS server
 	server, err := NewDNSServer(config)
 	if err != nil {
 		log.Fatalf("Failed to create DNS server: %v", err)
 	}
 
-	// Print DNSSEC info
-	ds := server.dnssec.Ksk.ToDS(dns.SHA256)
+	ds := server.dnssec.Csk.ToDS(dns.SHA256)
 
 	log.Printf("\n=== DNSSEC Keys ===")
 	log.Printf("Zone: %s", server.zone)
 	log.Printf("DS Record (voor parent zone):\n%s", ds.String())
 	log.Printf("===================\n")
 
-	// Registreer handler
 	dns.HandleFunc(".", server.handleDNS)
 
-	// Server configuratie
 	addr := fmt.Sprintf(":%d", port)
 
 	udpServer := &dns.Server{
@@ -796,7 +694,6 @@ func main() {
 		Net:  "tcp",
 	}
 
-	// Start servers
 	go func() {
 		log.Printf("Starting UDP DNS server on %s", addr)
 		if err := udpServer.ListenAndServe(); err != nil {
@@ -811,7 +708,6 @@ func main() {
 		}
 	}()
 
-	// Wacht op shutdown signaal
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
